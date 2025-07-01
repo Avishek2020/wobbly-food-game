@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wobbly Food Stack with AI Comments</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Comic Sans MS', 'Chalkboard SE', 'Marker Felt', sans-serif; }
+        canvas { display: block; }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .ui-panel {
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 1rem 1.5rem;
+            border-radius: 1.5rem;
+            text-align: center;
+            border: 4px dashed #FF6347;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.2);
+        }
+        #special-request-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(255, 228, 181, 0.95); /* Mocassin color */
+            padding: 1rem;
+            border-radius: 1rem;
+            border: 4px dashed #d2691e; /* Chocolate */
+            display: none; /* Hidden by default */
+            width: 90%;
+            max-width: 400px;
+        }
+        #drop-button {
+            background-color: #FF6347; /* Tomato Red */
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 1rem;
+            border: none;
+            font-size: 1.25rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s, background-color 0.3s;
+            box-shadow: 0 4px 0 #c14a32;
+        }
+        #drop-button:hover { background-color: #E5533D; }
+        #drop-button:active { transform: translateY(2px); box-shadow: 0 2px 0 #c14a32; }
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            background-color: rgba(0,0,0,0.75);
+            color: white;
+            padding: 2rem;
+            border-radius: 1.5rem;
+            text-align: center;
+            width: 90%;
+            max-width: 500px;
+            z-index: 10;
+        }
+        #play-again-button {
+            background-color: #4CAF50; /* Green */
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 1rem;
+            border: none;
+            font-size: 1.25rem;
+            margin-top: 1.5rem;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #play-again-button:hover { background-color: #45a049; }
+        #gemini-comment {
+            min-height: 50px;
+            border-top: 2px solid #fff;
+            padding-top: 1rem;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div class="ui-panel">
+            <h1 class="text-2xl font-bold text-gray-800">Score</h1>
+            <p class="text-xl"><span id="score">0</span></p>
+        </div>
+        <div class="ui-panel">
+             <button id="drop-button">Drop Food!</button>
+        </div>
+        <div class="ui-panel">
+            <h1 class="text-2xl font-bold text-gray-800">High Score</h1>
+            <p class="text-xl"><span id="high-score">0</span></p>
+        </div>
+    </div>
+
+    <div id="special-request-panel">
+        <h2 class="text-lg font-bold text-center text-yellow-900">The Tower Demands!</h2>
+        <p id="request-text" class="text-center text-yellow-800 italic"></p>
+    </div>
+
+    <div id="game-over">
+        <h2 class="text-5xl font-bold">Game Over!</h2>
+        <p class="text-2xl mt-2">Your final score: <span id="final-score">0</span></p>
+        <div id="gemini-comment" class="text-lg italic mt-4"></div>
+        <button id="play-again-button">Play Again</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase and Game State ---
+        let db, auth, userId;
+        let scene, camera, renderer, controls;
+        let plate, currentFoodItem;
+        let stackedItems = [];
+        let score = 0, highScore = 0;
+        let dropRange = 2;
+        let gravity = -0.02;
+        let isDropping = false, isGameOver = false;
+        let specialRequest = null;
+
+        // --- UI Elements ---
+        const uiScore = document.getElementById('score');
+        const uiHighScore = document.getElementById('high-score');
+        const dropButton = document.getElementById('drop-button');
+        const gameOverScreen = document.getElementById('game-over');
+        const finalScoreEl = document.getElementById('final-score');
+        const playAgainButton = document.getElementById('play-again-button');
+        const geminiCommentEl = document.getElementById('gemini-comment');
+        const requestPanel = document.getElementById('special-request-panel');
+        const requestText = document.getElementById('request-text');
+
+        // --- Firebase Setup ---
+        async function setupFirebase() {
+            try {
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'wobbly-food-stack-default';
+                const firebaseConfigStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+                
+                if (!firebaseConfigStr) {
+                    console.log("Firebase config not provided. High score feature disabled.");
+                    return;
+                }
+
+                const firebaseConfig = JSON.parse(firebaseConfigStr);
+                
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                userId = auth.currentUser?.uid || 'anonymous_user';
+                await loadHighScore();
+            } catch (error) {
+                console.error("Firebase setup failed. High score feature will be disabled.", error);
+                db = null; // Ensure db is null so other functions know to skip firebase logic
+            }
+        }
+
+        async function loadHighScore() {
+            if (!db || !userId) return;
+            const docRef = doc(db, "artifacts", "wobbly-food-stack", "users", userId);
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    highScore = docSnap.data().highScore || 0;
+                }
+            } catch (error) {
+                console.error("Error loading high score:", error);
+            }
+            uiHighScore.textContent = highScore;
+        }
+
+        async function saveHighScore() {
+            if (!db || !userId) return;
+            const docRef = doc(db, "artifacts", "wobbly-food-stack", "users", userId);
+            try {
+                await setDoc(docRef, { highScore: highScore });
+            } catch (error) {
+                console.error("Error saving high score:", error);
+            }
+        }
+
+        // --- INITIALIZE ---
+        function init() {
+            isGameOver = false;
+            isDropping = false;
+            score = 0;
+            dropRange = 2;
+            uiScore.textContent = '0';
+            if(scene) {
+                while(scene.children.length > 0){ scene.remove(scene.children[0]); }
+            }
+            stackedItems = [];
+            gameOverScreen.style.display = 'none';
+            requestPanel.style.display = 'none';
+            dropButton.disabled = false;
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 15, 30);
+
+            const canvasParent = document.body;
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            canvasParent.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enablePan = false;
+            controls.minDistance = 15;
+            controls.maxDistance = 50;
+            controls.target.set(0, 10, 0);
+            controls.update();
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+            dirLight.position.set(10, 20, 5);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            const floorGeometry = new THREE.PlaneGeometry(100, 100);
+            const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x45a045 });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+            
+            const plateGeometry = new THREE.CylinderGeometry(5, 5.5, 1, 32);
+            const plateMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            plate = new THREE.Mesh(plateGeometry, plateMaterial);
+            plate.position.y = 0.5;
+            plate.castShadow = true;
+            plate.receiveShadow = true;
+            scene.add(plate);
+            stackedItems.push(plate);
+
+            animate();
+        }
+
+        // --- FOOD DATA & CREATION ---
+        const foodTypes = {
+            burger: { color: 0x8B4513, geometry: new THREE.CylinderGeometry(2.5, 2.5, 1.5, 32) },
+            cheese: { color: 0xFFD700, geometry: new THREE.BoxGeometry(3.5, 0.5, 3.5) },
+            tomato: { color: 0xFF6347, geometry: new THREE.SphereGeometry(2, 32, 32) },
+            lettuce: { color: 0x90EE90, geometry: new THREE.CylinderGeometry(3, 3, 0.3, 32) },
+            donut: { color: 0xFFB6C1, geometry: new THREE.TorusGeometry(2, 0.8, 16, 100) }
+        };
+
+        function createFood(type) {
+            const data = foodTypes[type];
+            if (!data) return null;
+            const material = new THREE.MeshStandardMaterial({ color: data.color, roughness: 0.8 });
+            const foodMesh = new THREE.Mesh(data.geometry, material);
+            foodMesh.castShadow = true;
+            foodMesh.receiveShadow = true;
+            foodMesh.velocity = new THREE.Vector3(0, 0, 0);
+            createGooglyEyes(foodMesh);
+            return foodMesh;
+        }
+
+        function createGooglyEyes(parentMesh) {
+            const eyeGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+            const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1, metalness: 0.1 });
+            const pupilMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
+            const eyeL = new THREE.Mesh(eyeGeometry, eyeMaterial);
+            const pupilL = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 12), pupilMaterial);
+            eyeL.add(pupilL);
+            pupilL.position.z = 0.25;
+            const eyeR = eyeL.clone();
+            const radius = parentMesh.geometry.parameters.radius || parentMesh.geometry.parameters.width / 2 || 1.2;
+            eyeL.position.set(-0.7, 0.5, radius);
+            eyeR.position.set(0.7, 0.5, radius);
+            parentMesh.add(eyeL, eyeR);
+        }
+
+        // --- GAME LOGIC ---
+        function dropFood() {
+            if (isDropping || isGameOver || stackedItems.length === 0) return;
+            isDropping = true;
+            
+            let foodToDropType = specialRequest;
+            if (!foodToDropType) {
+                const foodKeys = Object.keys(foodTypes);
+                foodToDropType = foodKeys[Math.floor(Math.random() * foodKeys.length)];
+            }
+            
+            currentFoodItem = createFood(foodToDropType);
+            if (!currentFoodItem) { isDropping = false; return; }
+
+            const topY = stackedItems[stackedItems.length - 1].position.y;
+            currentFoodItem.position.set( (Math.random() - 0.5) * dropRange, topY + 15, 0 );
+            scene.add(currentFoodItem);
+        }
+        
+        async function checkCollision() {
+            if (!currentFoodItem) return;
+
+            const topItem = stackedItems[stackedItems.length - 1];
+            const topItemHeight = topItem.geometry.parameters.height || (topItem.geometry.parameters.radius || 1) * 2;
+            const currentItemHeight = currentFoodItem.geometry.parameters.height || (currentFoodItem.geometry.parameters.radius || 1) * 2;
+            const dropHeight = topItem.position.y + topItemHeight / 2 + currentItemHeight / 2 - 0.1;
+
+            if (currentFoodItem.position.y <= dropHeight) {
+                currentFoodItem.position.y = dropHeight;
+                currentFoodItem.velocity.y = 0;
+                isDropping = false;
+                
+                currentFoodItem.rotation.z = (Math.random() - 0.5) * 0.2;
+                
+                const distance = new THREE.Vector2(currentFoodItem.position.x, currentFoodItem.position.z).distanceTo(new THREE.Vector2(topItem.position.x, topItem.position.z));
+                
+                const maxStableDistance = (topItem.geometry.parameters.width || topItem.geometry.parameters.radius || 2.5) * 0.75;
+
+                if (distance > maxStableDistance) {
+                    await triggerGameOver();
+                } else {
+                    stackedItems.push(currentFoodItem);
+                    score++;
+                    uiScore.textContent = score;
+                    dropRange += 0.2; // Increase difficulty
+                    
+                    if (specialRequest) {
+                        specialRequest = null;
+                        requestPanel.style.display = 'none';
+                    }
+
+                    if (score > 0 && score % 5 === 0) {
+                        await getSpecialRequest();
+                    }
+                    currentFoodItem = null;
+                }
+            }
+        }
+
+        async function getSpecialRequest() {
+            requestPanel.style.display = 'block';
+            requestText.textContent = 'Thinking of a craving...';
+            const prompt = `You are a picky food tower. Request a specific food item to be stacked next. The available foods are: burger, cheese, tomato, lettuce, donut. Make your request in a short, funny, kid-friendly way. For example: 'I need a donut, stat!' or 'A juicy tomato would be perfect!'`;
+            try {
+                const text = await callGemini(prompt);
+                requestText.textContent = text;
+                const lowerText = text.toLowerCase();
+                for (const type of Object.keys(foodTypes)) {
+                    if (lowerText.includes(type)) {
+                        specialRequest = type;
+                        break;
+                    }
+                }
+            } catch (error) {
+                requestText.textContent = 'I want a... burger!';
+                specialRequest = 'burger';
+            }
+        }
+
+        async function triggerGameOver() {
+            isGameOver = true;
+            dropButton.disabled = true;
+            finalScoreEl.textContent = score;
+            
+            let isNewHighScore = false;
+            if (score > highScore) {
+                isNewHighScore = true;
+                highScore = score;
+                uiHighScore.textContent = highScore;
+                await saveHighScore();
+            }
+
+            gameOverScreen.style.display = 'block';
+            geminiCommentEl.textContent = 'The food tower is thinking of a comment...';
+
+            stackedItems.forEach((item, i) => {
+                if (i === 0) return;
+                item.velocity = new THREE.Vector3( (Math.random() - 0.5) * 5, Math.random() * 5, (Math.random() - 0.5) * 5 );
+            });
+
+            let prompt = `You are a stack of wobbly food. The game just ended. The player's final score was ${score}. Write a short, funny, and kid-friendly comment about the score. Be a little sassy or goofy.`;
+            if (isNewHighScore) {
+                prompt += ` They also just got a new high score of ${highScore}! Make the comment extra congratulatory.`
+            }
+            
+            try {
+                const text = await callGemini(prompt);
+                geminiCommentEl.textContent = `"${text}"`;
+            } catch (error) {
+                geminiCommentEl.textContent = "I'm speechless! Try again!";
+            }
+        }
+
+        async function callGemini(prompt) {
+            let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+            const payload = { contents: chatHistory };
+            const apiKey = ""; // Injected
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            if (!response.ok) throw new Error(`API request failed with status ${response.status}`);
+            const result = await response.json();
+
+            if (result.candidates && result.candidates[0]?.content?.parts[0]?.text) {
+                return result.candidates[0].content.parts[0].text;
+            } else {
+                throw new Error("Invalid response structure from API.");
+            }
+        }
+
+        // --- CONTROLS & EVENTS ---
+        dropButton.addEventListener('click', dropFood);
+        playAgainButton.addEventListener('click', () => {
+            if (renderer && renderer.domElement.parentElement) {
+                renderer.domElement.parentElement.removeChild(renderer.domElement);
+            }
+            if (renderer) renderer.dispose();
+            init();
+        });
+        
+        // --- ANIMATION LOOP ---
+        function animate() {
+            if (isGameOver) {
+                // No need for complex stop condition, let it run but logic handles state
+            }
+            requestAnimationFrame(animate);
+
+            if (isDropping && currentFoodItem) {
+                currentFoodItem.velocity.y += gravity;
+                currentFoodItem.position.y += currentFoodItem.velocity.y;
+                checkCollision();
+            }
+
+            if (isGameOver) {
+                stackedItems.forEach((item, i) => {
+                    if (i > 0 && item.position.y > -20) {
+                        item.velocity.y += gravity * 2;
+                        item.position.add(item.velocity);
+                        item.rotation.x += item.velocity.x * 0.01;
+                        item.rotation.z += item.velocity.z * 0.01;
+                    }
+                });
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        
+        window.addEventListener('resize', () => {
+            if (!camera || !renderer) return;
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- START ---
+        async function start() {
+            await setupFirebase();
+            init();
+        }
+        start();
+    </script>
+</body>
+</html>
