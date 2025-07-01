@@ -16,6 +16,7 @@
             display: flex;
             gap: 20px;
             align-items: center;
+            z-index: 10;
         }
         .ui-panel {
             background-color: rgba(255, 255, 255, 0.9);
@@ -37,6 +38,7 @@
             display: none; /* Hidden by default */
             width: 90%;
             max-width: 400px;
+            z-index: 10;
         }
         #drop-button {
             background-color: #FF6347; /* Tomato Red */
@@ -84,6 +86,41 @@
             border-top: 2px solid #fff;
             padding-top: 1rem;
             margin-top: 1rem;
+        }
+
+        /* Responsive Adjustments */
+        @media (max-width: 640px) {
+            #ui-container {
+                flex-direction: column;
+                gap: 10px;
+                width: 90%;
+            }
+            .ui-panel {
+                width: 100%;
+                padding: 0.5rem 1rem;
+            }
+            .ui-panel h1 {
+                font-size: 1.125rem; /* text-lg */
+            }
+            .ui-panel p {
+                font-size: 1rem; /* text-base */
+            }
+            #drop-button {
+                padding: 0.75rem 1.5rem;
+                font-size: 1rem;
+            }
+            #game-over {
+                padding: 1.5rem;
+            }
+            #game-over h2 {
+                font-size: 2.25rem; /* text-4xl */
+            }
+            #game-over p {
+                font-size: 1.125rem; /* text-lg */
+            }
+            #play-again-button {
+                font-size: 1rem;
+            }
         }
     </style>
 </head>
